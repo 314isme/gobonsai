@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -374,12 +375,32 @@ type SerializableEntity struct {
 	Components map[string]Component
 }
 
-func (em *ECSManager) EncodeEntity(e Entity) ([]byte, error) {
+func (em *ECSManager) EncodeEntity(e Entity, names ...string) ([]byte, error) {
 	v, _ := em.components.Load(e)
 	cm := v.(*sync.Map)
+
+	include := make(map[string]bool)
+	exclude := make(map[string]bool)
+	for _, n := range names {
+		if strings.HasPrefix(n, "-") {
+			exclude[n[1:]] = true
+		} else {
+			include[n] = true
+		}
+	}
+
 	comps := make(map[string]Component)
 	cm.Range(func(k, v interface{}) bool {
-		comps[k.(string)] = v
+		key := k.(string)
+		if len(include) > 0 {
+			if !include[key] {
+				return true
+			}
+		}
+		if exclude[key] {
+			return true
+		}
+		comps[key] = v.(Component)
 		return true
 	})
 
@@ -394,19 +415,19 @@ func (em *ECSManager) EncodeEntity(e Entity) ([]byte, error) {
 
 	entityData := SerializableEntity{ID: e, Ident: ident, Components: comps}
 	buf := new(bytes.Buffer)
-	err := gob.NewEncoder(buf).Encode(entityData)
-	if err != nil {
+	if err := gob.NewEncoder(buf).Encode(entityData); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
 }
 
-func (em *ECSManager) DecodeEntity(data []byte) (Entity, error) {
+func (em *ECSManager) DecodeEntity(data []byte, names ...string) (Entity, error) {
 	buf := bytes.NewBuffer(data)
 	var entityData SerializableEntity
 	if err := gob.NewDecoder(buf).Decode(&entityData); err != nil {
 		return 0, err
 	}
+
 	var target Entity
 	if entityData.Ident != "" {
 		if ex, ok := em.GetEntityByIdent(entityData.Ident); ok {
@@ -417,7 +438,26 @@ func (em *ECSManager) DecodeEntity(data []byte) (Entity, error) {
 	} else {
 		target = em.AddEntity()
 	}
+
+	include := make(map[string]bool)
+	exclude := make(map[string]bool)
+	for _, n := range names {
+		if strings.HasPrefix(n, "-") {
+			exclude[n[1:]] = true
+		} else {
+			include[n] = true
+		}
+	}
+
 	for name, comp := range entityData.Components {
+		if len(include) > 0 {
+			if !include[name] {
+				continue
+			}
+		}
+		if exclude[name] {
+			continue
+		}
 		target.AddComponent(name, comp)
 	}
 	return target, nil
